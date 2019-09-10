@@ -19,7 +19,7 @@ from ibis.sql.compiler import DDL, DML
 from ibis.util import log
 
 try:
-    from cudf.dataframe.dataframe import DataFrame as GPUDataFrame
+    from cudf import DataFrame as GPUDataFrame
 except (ImportError, OSError):
     GPUDataFrame = None
 
@@ -33,9 +33,6 @@ try:
 except ImportError:
     ...
 
-EXECUTION_TYPE_ICP = 1
-EXECUTION_TYPE_ICP_GPU = 2
-EXECUTION_TYPE_CURSOR = 3
 
 fully_qualified_re = re.compile(r"(.*)\.(?:`(.*)`|(.*))")
 
@@ -238,12 +235,13 @@ class OmniSciDBGeoCursor(OmniSciDBDefaultCursor):
         dataframe : pandas.DataFrame
         """
         cursor = self.cursor
-        cursor_description = cursor.description
 
         if not isinstance(cursor, Cursor):
             if cursor is None:
                 return geopandas.GeoDataFrame([])
             return cursor
+
+        cursor_description = cursor.description
 
         col_names = [c.name for c in cursor_description]
         result = pd.DataFrame(cursor.fetchall(), columns=col_names)
@@ -276,12 +274,30 @@ class OmniSciDBGeoCursor(OmniSciDBDefaultCursor):
         return result
 
 
+class OmniSciDBGPUCursor(OmniSciDBDefaultCursor):
+    """Cursor that exports result to GPU Dataframe."""
+
+    def to_df(self):
+        """
+        Return the result as a data frame.
+
+        Returns
+        -------
+        dataframe : cudf.DataFrame
+        """
+        return self.cursor
+
+
 class OmniSciDBQuery(Query):
-    """OmniSciDB Query class."""
+    """DML query execution to enable queries, progress, cancellation etc."""
 
     def _fetch(self, cursor):
-        # check if cursor is a pymapd cursor.Cursor
-        return self.schema().apply_to(cursor.to_df())
+        result = cursor.to_df()
+        # TODO: try to use `apply_to` for cudf.DataFrame using cudf 0.9
+        if GPUDataFrame is None or not isinstance(result, GPUDataFrame):
+            return self.schema().apply_to(result)
+        else:
+            return result
 
 
 class OmniSciDBTable(ir.TableExpr, DatabaseEntity):
@@ -476,13 +492,15 @@ class OmniSciDBClient(SQLClient):
         user: str = None,
         password: str = None,
         host: str = None,
-        port: str = 6274,
+        port: int = 6274,
         database: str = None,
         protocol: str = 'binary',
         session_id: str = None,
-        execution_type: str = EXECUTION_TYPE_CURSOR,
+        gpu_device: int = None,
+        ipc: bool = None,
     ):
-        """Initialize OmniSciDB Client.
+        """
+        Initialize OmniSciDB Client.
 
         Parameters
         ----------
@@ -492,11 +510,14 @@ class OmniSciDBClient(SQLClient):
         host : str, optional
         port : int, default 6274
         database : str, optional
-        protocol : {'binary', 'http', 'https'}, default binary
+        protocol : {'binary', 'http', 'https'}, default 'binary'
         session_id: str, optional
-        execution_type : {
-          EXECUTION_TYPE_ICP, EXECUTION_TYPE_ICP_GPU, EXECUTION_TYPE_CURSOR
-        }, default EXECUTION_TYPE_CURSOR
+        ipc : bool, optional, default None
+          Enable Inter Process Communication (IPC) execution type.
+          `ipc` default value when `gpu_device` is None is False, otherwise
+          its default value is True.
+        gpu_device : int, optional, default None
+          GPU Device ID.
 
         Raises
         ------
@@ -514,14 +535,10 @@ class OmniSciDBClient(SQLClient):
         self.protocol = protocol
         self.session_id = session_id
 
-        if execution_type not in (
-            EXECUTION_TYPE_ICP,
-            EXECUTION_TYPE_ICP_GPU,
-            EXECUTION_TYPE_CURSOR,
-        ):
-            raise Exception('Execution type defined not available.')
+        self._check_execution_type(ipc=ipc, gpu_device=gpu_device)
 
-        self.execution_type = execution_type
+        self.ipc = ipc
+        self.gpu_device = gpu_device
 
         if session_id:
             if self.version < pkg_resources.parse_version('0.12.0'):
@@ -586,6 +603,14 @@ class OmniSciDBClient(SQLClient):
         result = build_ast(expr, context)
         return result
 
+    def _check_execution_type(self, ipc: bool, gpu_device: int):
+        """Check if the execution type (ipc and gpu_device) is valid."""
+        if gpu_device is not None and ipc is False:
+            raise com.IbisInputError(
+                'If GPU device is provided, IPC parameter should '
+                'be True or None (default).'
+            )
+
     def _fully_qualified_name(self, name, database):
         # OmniSciDB raises error sometimes with qualified names
         return name
@@ -633,16 +658,44 @@ class OmniSciDBClient(SQLClient):
             database, table_name = table_name_
         return self.get_schema(table_name, database)
 
-    def _execute(self, query, results=True):
-        """Execute a query.
+    def _execute_query(self, dml, **kwargs):
+        query = self.query_class(self, dml, **kwargs)
+        return query.execute(**kwargs)
 
-        Paramters
-        ---------
-        query : DDL or DML or string
+    def _execute(
+        self,
+        query: str,
+        results: bool = True,
+        ipc: bool = None,
+        gpu_device: int = None,
+    ):
+        """
+        Compile and execute Ibis expression.
+
+        Return result in-memory in the appropriate object type.
+
+        Parameters
+        ----------
+        query : string
+          DML or DDL statement
+        results : boolean, default False
+          Pass True if the query as a result set
+        ipc : bool, optional, default None
+          Enable Inter Process Communication (IPC) execution type.
+          `ipc` default value when `gpu_device` is None is False, otherwise
+          its default value is True.
+        gpu_device : int, optional, default None
+          GPU device ID.
 
         Returns
         -------
-        result : pandas.DataFrame
+        output : execution type dependent
+          If IPC and with no GPU :
+            pandas.DataFrame
+          IF IPC and GPU : cudf.DataFrame
+          If no IPC and with no GPU:
+            pandas.DataFrame or
+            geopandas.GeoDataFrame (if corresponds)
 
         Raises
         ------
@@ -652,12 +705,11 @@ class OmniSciDBClient(SQLClient):
         if isinstance(query, (DDL, DML)):
             query = query.compile()
 
-        if self.execution_type == EXECUTION_TYPE_ICP:
-            execute = self.con.select_ipc
-        elif self.execution_type == EXECUTION_TYPE_ICP_GPU:
-            execute = self.con.select_ipc_gpu
-        else:
-            execute = self.con.cursor().execute
+        if ipc is None and gpu_device is None:
+            ipc = self.ipc
+            gpu_device = self.gpu_device
+
+        self._check_execution_type(ipc, gpu_device)
 
         cursor = (
             OmniSciDBGeoCursor
@@ -665,8 +717,19 @@ class OmniSciDBClient(SQLClient):
             else OmniSciDBDefaultCursor
         )
 
+        params = {}
+
+        if ipc in (None, False) and gpu_device is None:
+            execute = self.con.cursor().execute
+        elif ipc and gpu_device is None:
+            execute = self.con.select_ipc
+        elif gpu_device is not None:
+            params['device_id'] = gpu_device
+            execute = self.con.select_ipc_gpu
+            cursor = OmniSciDBGPUCursor
+
         try:
-            result = cursor(execute(query))
+            result = cursor(execute(query, **params))
         except Exception as e:
             raise Exception('{}: {}'.format(e, query))
 
@@ -973,7 +1036,8 @@ class OmniSciDBClient(SQLClient):
                 database=name,
                 protocol=self.protocol,
                 session_id=self.session_id,
-                execution_type=self.execution_type,
+                ipc=self.ipc,
+                device=self.device,
             )
             return self.database_class(name, new_client)
 

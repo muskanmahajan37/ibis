@@ -148,3 +148,20 @@ def test_sql(con, sql):
 def test_explain(con, alltypes):
     # execute the expression using SQL query
     con.explain(alltypes)
+
+
+@pytest.mark.parametrize('ipc', [None, True, False])
+def test_cpu_execution_type(con, ipc: bool):
+    """Test the combination of ipc and gpu_device parameters for connection."""
+    connection_info = {
+        'host': con.host,
+        'port': con.port,
+        'user': con.user,
+        'password': con.password,
+        'database': con.db_name,
+        'protocol': con.protocol,
+        'ipc': ipc,
+    }
+
+    new_con = ibis.omniscidb.connect(**connection_info)
+    assert new_con is not None

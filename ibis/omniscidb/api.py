@@ -4,7 +4,7 @@ import ibis
 import ibis.common.exceptions as com
 import ibis.config as cf
 from ibis.config import options
-from ibis.omniscidb.client import EXECUTION_TYPE_CURSOR, OmniSciDBClient
+from ibis.omniscidb.client import OmniSciDBClient  # noqa: F401
 from ibis.omniscidb.compiler import compiles, dialect, rewrites  # noqa: F401
 
 
@@ -47,29 +47,35 @@ def verify(expr: ibis.Expr, params: dict = None) -> bool:
 
 
 def connect(
-    uri=None,
-    user=None,
-    password=None,
-    host=None,
-    port=6274,
-    database=None,
-    protocol='binary',
-    session_id=None,
-    execution_type=EXECUTION_TYPE_CURSOR,
+    uri: str = None,
+    user: str = None,
+    password: str = None,
+    host: str = None,
+    port: str = 6274,
+    database: str = None,
+    protocol: str = 'binary',
+    session_id: str = None,
+    ipc: bool = None,
+    gpu_device: int = None,
 ):
     """Create a client for OmniSciDB backend.
 
     Parameters
     ----------
-    uri : str
-    user : str
-    password : str
-    host : str
-    port : int
-    database : str
-    protocol : str
-    session_id : str
-    execution_type : int
+    uri : str, optional
+    user : str, optional
+    password : str, optional
+    host : str, optional
+    port : int, default 6274
+    database : str, optional
+    protocol : {'binary', 'http', 'https'}, default 'binary'
+    session_id: str, optional
+    ipc : bool, optional
+      Enable Inter Process Communication (IPC) execution type.
+      `ipc` default value is False when `gpu_device` is None, otherwise
+      its default value is True.
+    gpu_device : int, optional
+      GPU Device ID.
 
     Returns
     -------
@@ -84,7 +90,8 @@ def connect(
         database=database,
         protocol=protocol,
         session_id=session_id,
-        execution_type=execution_type,
+        ipc=ipc,
+        gpu_device=gpu_device,
     )
 
     if options.default_backend is None:
