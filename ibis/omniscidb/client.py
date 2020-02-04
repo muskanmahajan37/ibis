@@ -1,4 +1,6 @@
 """Ibis OmniSciDB Client."""
+from typing import Optional
+
 import pandas as pd
 import pkg_resources
 import pymapd
@@ -488,16 +490,16 @@ class OmniSciDBClient(SQLClient):
 
     def __init__(
         self,
-        uri: str = None,
-        user: str = None,
-        password: str = None,
-        host: str = None,
-        port: int = 6274,
-        database: str = None,
+        uri: Optional[str] = None,
+        user: Optional[str] = None,
+        password: Optional[str] = None,
+        host: Optional[str] = None,
+        port: Optional[int] = 6274,
+        database: Optional[str] = None,
         protocol: str = 'binary',
-        session_id: str = None,
-        gpu_device: int = None,
-        ipc: bool = None,
+        session_id: Optional[str] = None,
+        ipc: Optional[bool] = None,
+        gpu_device: Optional[int] = None,
     ):
         """
         Initialize OmniSciDB Client.
@@ -603,8 +605,22 @@ class OmniSciDBClient(SQLClient):
         result = build_ast(expr, context)
         return result
 
-    def _check_execution_type(self, ipc: bool, gpu_device: int):
-        """Check if the execution type (ipc and gpu_device) is valid."""
+    def _check_execution_type(
+        self, ipc: Optional[bool], gpu_device: Optional[int]
+    ):
+        """
+        Check if the execution type (ipc and gpu_device) is valid.
+
+        Parameters
+        ----------
+        ipc : bool, optional
+        gpu_device : int, optional
+
+        Raises
+        ------
+        com.IbisInputError
+            if "gpu_device" is not None and "ipc" is False
+        """
         if gpu_device is not None and ipc is False:
             raise com.IbisInputError(
                 'If GPU device is provided, IPC parameter should '
@@ -666,8 +682,9 @@ class OmniSciDBClient(SQLClient):
         self,
         query: str,
         results: bool = True,
-        ipc: bool = None,
-        gpu_device: int = None,
+        ipc: Optional[bool] = None,
+        gpu_device: Optional[int] = None,
+        **kwargs
     ):
         """
         Compile and execute Ibis expression.
@@ -682,20 +699,20 @@ class OmniSciDBClient(SQLClient):
           Pass True if the query as a result set
         ipc : bool, optional, default None
           Enable Inter Process Communication (IPC) execution type.
-          `ipc` default value when `gpu_device` is None is False, otherwise
-          its default value is True.
+          `ipc` default value (None) when `gpu_device` is None is interpreted
+           as False, otherwise it is interpreted as True.
         gpu_device : int, optional, default None
           GPU device ID.
 
         Returns
         -------
         output : execution type dependent
-          If IPC and with no GPU :
-            pandas.DataFrame
-          IF IPC and GPU : cudf.DataFrame
-          If no IPC and with no GPU:
+          If IPC is set as True and no GPU device is set:
+            ``pandas.DataFrame``
+          If IPC is set as True and GPU device is set: ``cudf.DataFrame``
+          If IPC is set as False and no GPU device is set:
             pandas.DataFrame or
-            geopandas.GeoDataFrame (if corresponds)
+            geopandas.GeoDataFrame (if it uses geospatial data)
 
         Raises
         ------
@@ -719,11 +736,11 @@ class OmniSciDBClient(SQLClient):
 
         params = {}
 
-        if ipc in (None, False) and gpu_device is None:
+        if gpu_device is None and not ipc:
             execute = self.con.cursor().execute
-        elif ipc and gpu_device is None:
+        elif gpu_device is None and ipc:
             execute = self.con.select_ipc
-        elif gpu_device is not None:
+        else:
             params['device_id'] = gpu_device
             execute = self.con.select_ipc_gpu
             cursor = OmniSciDBGPUCursor

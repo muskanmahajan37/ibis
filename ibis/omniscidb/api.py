@@ -1,4 +1,5 @@
 """OmniSciDB API module."""
+from typing import Optional
 
 import ibis
 import ibis.common.exceptions as com
@@ -47,16 +48,16 @@ def verify(expr: ibis.Expr, params: dict = None) -> bool:
 
 
 def connect(
-    uri: str = None,
-    user: str = None,
-    password: str = None,
-    host: str = None,
-    port: str = 6274,
-    database: str = None,
+    uri: Optional[str] = None,
+    user: Optional[str] = None,
+    password: Optional[str] = None,
+    host: Optional[str] = None,
+    port: Optional[int] = 6274,
+    database: Optional[str] = None,
     protocol: str = 'binary',
-    session_id: str = None,
-    ipc: bool = None,
-    gpu_device: int = None,
+    session_id: Optional[str] = None,
+    ipc: Optional[bool] = None,
+    gpu_device: Optional[int] = None,
 ):
     """Create a client for OmniSciDB backend.
 
